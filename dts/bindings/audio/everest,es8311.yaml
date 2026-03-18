@@ -1,0 +1,49 @@
+# Copyright (c) 2025 Your Company
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+    Everest Semiconductor ES8311 Low Power Mono Audio CODEC.
+    The ES8311 is a high-performance, low-power mono audio CODEC with 
+    a multi-bit delta-sigma ADC and DAC. It supports I2S/PCM serial data 
+    interfaces and is configured via I2C.
+
+compatible: "everest,es8311"
+
+include: [i2c-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  clock-source:
+    type: string
+    default: "MCLK"
+    description: |
+      Selection for the system clock (MCLKin) source (Register 0x01, MCLK_SEL).
+      - "MCLK": Master clock is derived from the MCLK pin (default).
+      - "BCLK": Master clock is derived from the SCLK/BCLK pin.
+    enum:
+      - "MCLK"
+      - "BCLK"
+
+  mclk-inverted:
+    type: boolean
+    description: |
+      If enabled, the MCLK input signal is inverted internally (Register 0x01, MCLK_INV).
+      This can be useful for resolving signal integrity or timing issues.
+
+  digital-mic:
+    type: boolean
+    description: |
+      If enabled, the device is configured for Digital Microphone (DMIC) mode 
+      instead of the default Analog Microphone mode (Register 0x14, DMIC_ON).
+
+  reset-gpios:
+    type: phandle-array
+    description: |
+      GPIO connected to the hardware reset pin of the ES8311. 
+      The driver will toggle this pin during the initialization sequence 
+      if provided.
+
+  # Additional properties can be added here for specialized configurations
+  # such as ALC (Auto Level Control) or EQ settings.

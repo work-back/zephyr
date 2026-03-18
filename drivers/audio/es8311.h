@@ -1,0 +1,55 @@
+/*
+ * Copyright (c) 2025 Your Company
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#ifndef ZEPHYR_DRIVERS_AUDIO_ES8311_H_
+#define ZEPHYR_DRIVERS_AUDIO_ES8311_H_
+
+#include <zephyr/types.h>
+
+/* ES8311 寄存器地址定义 (基于 Datasheet) */
+#define ES8311_REG_RESET         0x00
+#define ES8311_REG_CLK_MANAGER01 0x01
+#define ES8311_REG_CLK_MANAGER02 0x02
+#define ES8311_REG_CLK_MANAGER03 0x03
+#define ES8311_REG_CLK_MANAGER04 0x04
+#define ES8311_REG_CLK_MANAGER05 0x05
+#define ES8311_REG_CLK_MANAGER06 0x06
+#define ES8311_REG_CLK_MANAGER07 0x07
+#define ES8311_REG_CLK_MANAGER08 0x08
+#define ES8311_REG_SDP_IN        0x09
+#define ES8311_REG_SDP_OUT       0x0A
+#define ES8311_REG_SYSTEM0B      0x0B
+#define ES8311_REG_SYSTEM0C      0x0C
+#define ES8311_REG_SYSTEM0D      0x0D
+#define ES8311_REG_SYSTEM0E      0x0E
+#define ES8311_REG_SYSTEM0F      0x0F
+#define ES8311_REG_SYSTEM10      0x10
+#define ES8311_REG_SYSTEM11      0x11
+#define ES8311_REG_SYSTEM12      0x12
+#define ES8311_REG_SYSTEM13      0x13
+#define ES8311_REG_SYSTEM14      0x14
+#define ES8311_REG_ADC_CONTROL15 0x15
+#define ES8311_REG_ADC_CONTROL16 0x16
+#define ES8311_REG_ADC_VOLUME    0x17
+#define ES8311_REG_ADC_CONTROL18 0x18
+#define ES8311_REG_DAC_CONTROL31 0x31
+#define ES8311_REG_DAC_VOLUME    0x32
+#define ES8311_REG_CHIP_ID1      0xFD
+#define ES8311_REG_CHIP_ID2      0xFE
+
+/* 关键位掩码定义 */
+#define ES8311_SDP_IN_FMT_MASK   0x03
+#define ES8311_SDP_IN_WL_MASK    0x1C
+#define ES8311_SDP_OUT_FMT_MASK  0x03
+#define ES8311_SDP_OUT_WL_MASK   0x1C
+
+/* 音频格式映射 */
+enum es8311_format {
+    ES8311_I2S = 0,
+    ES8311_LJ  = 1,
+    ES8311_DSP = 3,
+};
+
+#endif /* ZEPHYR_DRIVERS_AUDIO_ES8311_H_ */
