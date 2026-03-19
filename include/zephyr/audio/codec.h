@@ -254,6 +254,7 @@ struct audio_codec_api {
 	int (*register_done_callback)(const struct device *dev,
 				      audio_codec_tx_done_callback_t tx_cb, void *tx_cb_user_data,
 				      audio_codec_rx_done_callback_t rx_cb, void *rx_cb_user_data);
+	int (*dump)(const struct device *dev);
 };
 /**
  * @endcond
@@ -540,6 +541,17 @@ static inline int audio_codec_register_done_callback(const struct device *dev,
 	}
 
 	return api->register_done_callback(dev, tx_cb, tx_cb_user_data, rx_cb, rx_cb_user_data);
+}
+
+static inline int audio_codec_dump(const struct device *dev)
+{
+	const struct audio_codec_api *api = (const struct audio_codec_api *)dev->api;
+
+	if (api->dump == NULL) {
+		return -ENOSYS;
+	}
+
+	return api->dump(dev);
 }
 
 #ifdef __cplusplus

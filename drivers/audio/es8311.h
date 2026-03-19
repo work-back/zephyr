@@ -45,6 +45,11 @@
 #define ES8311_SDP_OUT_FMT_MASK  0x03
 #define ES8311_SDP_OUT_WL_MASK   0x1C
 
+#define ES8311_CSM_ON            (1 << 7)
+#define ES8311_MCLK_ON           (1 << 5)
+#define ES8311_BCLK_ON           (1 << 4)
+#define ES8311_HPSW_EN           (1 << 4)
+
 /* 音频格式映射 */
 enum es8311_format {
     ES8311_I2S = 0,

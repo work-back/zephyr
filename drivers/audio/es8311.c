@@ -2,6 +2,7 @@
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/audio/codec.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/printk.h>
 #include "es8311.h"
 
 LOG_MODULE_REGISTER(everest_es8311, CONFIG_AUDIO_CODEC_LOG_LEVEL);
@@ -60,6 +61,38 @@ static int es8311_set_dai_fmt(const struct device *dev, audio_dai_cfg_t *cfg)
     return 0;
 }
 
+static int es8311_dump_status(const struct device *dev)
+{
+    uint8_t id1, id2, flag, sys12, sys0d, clk01;
+
+    // 1. 验证通信与芯片 ID (预期: 0x83 0x11)
+    es8311_read_reg(dev, ES8311_REG_CHIP_ID1, &id1);
+    es8311_read_reg(dev, ES8311_REG_CHIP_ID2, &id2);
+
+    // 2. 读取状态机标志 (Register 0xFC)
+    // Bits [6:4] FLAG_CSM_CHIP: 0=S0(Wait), 7=S7(Ready)
+    es8311_read_reg(dev, 0xFC, &flag);
+
+    // 3. 读取电源与时钟控制
+    es8311_read_reg(dev, 0x01, &clk01); // MCLK_ON, BCLK_ON
+    es8311_read_reg(dev, 0x0D, &sys0d); // PDN_ANA (应该为0以使能模拟电路)
+    es8311_read_reg(dev, 0x12, &sys12); // PDN_DAC (应该为0以使能DAC)
+
+    printk("--- ES8311 Diagnostic Report ---\n");
+    printk("Chip ID: 0x%02X%02X (Expected: 0x8311)\n", id1, id2);
+    printk("CSM State: S%d (Expected: S7 for playback)\n", (flag >> 4) & 0x07);
+    printk("Clock Config: 0x%02X (MCLK_ON: %d, BCLK_ON: %d)\n",
+            clk01, (clk01 >> 5) & 1, (clk01 >> 4) & 1);
+    printk("Power Status: DAC_PDN=%d, ANA_PDN=%d\n",
+            (sys12 >> 1) & 1, (sys0d >> 7) & 1);
+
+    if (id1 != 0x83) {
+        printk("Error: I2C Communication failed or wrong address!\n");
+        return -EIO;
+    }
+    return 0;
+}
+
 static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cfg)
 {
     int ret;
@@ -71,19 +104,27 @@ static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cf
 
     /* 2. 时钟与电源初始化 (这里需要根据 Datasheet 的典型上电序列) */
     es8311_write_reg(dev, ES8311_REG_SYSTEM0B, 0x00); // 示例：Power up stage A
-    es8311_write_reg(dev, ES8311_REG_CLK_MANAGER01, 0x30); // 开启 MCLK/BCLK
+    es8311_write_reg(dev, ES8311_REG_CLK_MANAGER01, ES8311_MCLK_ON | ES8311_BCLK_ON); // 开启 MCLK/BCLK
 
-    /* 3. 配置 DAI 格式 */
+    // 3. 使能模拟电源与使能 DAC
+    es8311_write_reg(dev, ES8311_REG_SYSTEM0D, 0x00); // PDN_ANA=0 (Enable analog)
+    es8311_write_reg(dev, ES8311_REG_SYSTEM12, 0x00); // PDN_DAC=0 (Enable DAC)
+    es8311_write_reg(dev, ES8311_REG_SYSTEM13, 0x10); // HPSW=1 (Enable HP driver for OUTP/N)
+
+    /* 4. 配置 DAI 格式 */
     ret = es8311_set_dai_fmt(dev, &cfg->dai_cfg);
     if (ret != 0) return ret;
 
-    /* 4. 设置采样率 (逻辑较复杂，简化处理) */
+    /* 5. 设置采样率 (逻辑较复杂，简化处理) */
     // ES8311 需要根据 MCLK 和 Fs 配置 ADC_OSR (Reg 0x03) 和 DAC_OSR (Reg 0x04)
     // 假设使用默认 256Fs 模式
     
-    /* 5. 解除静音 */
+    /* 6. 解除静音 */
     es8311_write_reg(dev, ES8311_REG_ADC_VOLUME, 0xBF); // 0dB
     es8311_write_reg(dev, ES8311_REG_DAC_VOLUME, 0xBF); // 0dB
+
+    /* CSM on */
+    es8311_write_reg(dev, ES8311_REG_RESET, ES8311_CSM_ON);
 
     return 0;
 }
@@ -105,6 +146,7 @@ static int es8311_set_property(const struct device *dev, audio_property_t proper
 static const struct audio_codec_api es8311_api = {
     .configure = es8311_configure,
     .set_property = es8311_set_property,
+    .dump = es8311_dump_status,
 };
 
 #define ES8311_INIT(n)                                         \
