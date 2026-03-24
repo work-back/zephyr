@@ -15,35 +15,9 @@ properties:
   reg:
     required: true
 
-  clock-source:
-    type: string
-    default: "MCLK"
-    description: |
-      Selection for the system clock (MCLKin) source (Register 0x01, MCLK_SEL).
-      - "MCLK": Master clock is derived from the MCLK pin (default).
-      - "BCLK": Master clock is derived from the SCLK/BCLK pin.
-    enum:
-      - "MCLK"
-      - "BCLK"
-
-  mclk-inverted:
+  mclk-from-sclk:
     type: boolean
     description: |
-      If enabled, the MCLK input signal is inverted internally (Register 0x01, MCLK_INV).
-      This can be useful for resolving signal integrity or timing issues.
+      If set, the codec will derive its master clock from the SCLK pin
+      instead of the MCLK pin.
 
-  digital-mic:
-    type: boolean
-    description: |
-      If enabled, the device is configured for Digital Microphone (DMIC) mode 
-      instead of the default Analog Microphone mode (Register 0x14, DMIC_ON).
-
-  reset-gpios:
-    type: phandle-array
-    description: |
-      GPIO connected to the hardware reset pin of the ES8311. 
-      The driver will toggle this pin during the initialization sequence 
-      if provided.
-
-  # Additional properties can be added here for specialized configurations
-  # such as ALC (Auto Level Control) or EQ settings.

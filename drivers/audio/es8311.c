@@ -1,161 +1,262 @@
+#define DT_DRV_COMPAT everest_es8311
+
 #include <zephyr/device.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/audio/codec.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/sys/printk.h>
 #include "es8311.h"
 
-LOG_MODULE_REGISTER(everest_es8311, CONFIG_AUDIO_CODEC_LOG_LEVEL);
+LOG_MODULE_REGISTER(es8311, CONFIG_AUDIO_CODEC_LOG_LEVEL);
 
-#define DT_DRV_COMPAT everest_es8311
-
-struct es8311_driver_config {
+struct es8311_config {
     struct i2c_dt_spec i2c;
+    bool mclk_from_sclk;
 };
 
-/* --- I2C 辅助函数 (8位地址/8位数据) --- */
-static int es8311_write_reg(const struct device *dev, uint8_t reg, uint8_t val)
-{
-    const struct es8311_driver_config *cfg = dev->config;
+struct es8311_data {
+    uint32_t mclk_freq;
+};
+
+/* 时钟系数表 (完整版请参考原 ESP-IDF 代码，这里列出典型值) */
+static const struct es8311_coeff coeff_table[] = {
+    /* MCLK, Rate, pre_div, multi, adc_div, dac_div, fs, lr_h, lr_l, bck, a_osr, d_osr */
+    /* 8k */
+    {12288000, 8000, 0x06, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {18432000, 8000, 0x03, 0x01, 0x03, 0x03, 0x00, 0x05, 0xff, 0x18, 0x10, 0x10},
+    {16384000, 8000, 0x08, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {8192000, 8000, 0x04, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {6144000, 8000, 0x03, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {4096000, 8000, 0x02, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {3072000, 8000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {2048000, 8000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1536000, 8000, 0x03, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1024000, 8000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+
+    /* 11.025k */
+    {11289600, 11025, 0x04, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {5644800, 11025, 0x02, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {2822400, 11025, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1411200, 11025, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+
+    /* 12k */
+    {12288000, 12000, 0x04, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {6144000, 12000, 0x02, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {3072000, 12000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1536000, 12000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+
+    /* 16k */
+    {12288000, 16000, 0x03, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {18432000, 16000, 0x03, 0x01, 0x03, 0x03, 0x00, 0x02, 0xff, 0x0c, 0x10, 0x10},
+    {16384000, 16000, 0x04, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {8192000, 16000, 0x02, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {6144000, 16000, 0x03, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {4096000, 16000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {3072000, 16000, 0x03, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {2048000, 16000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1536000, 16000, 0x03, 0x03, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1024000, 16000, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+
+    /* 22.05k */
+    {11289600, 22050, 0x02, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {5644800, 22050, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {2822400, 22050, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1411200, 22050, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {705600, 22050, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+
+    /* 24k */
+    {12288000, 24000, 0x02, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {18432000, 24000, 0x03, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {6144000, 24000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {3072000, 24000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1536000, 24000, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+
+    /* 32k */
+    {12288000, 32000, 0x03, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {18432000, 32000, 0x03, 0x02, 0x03, 0x03, 0x00, 0x02, 0xff, 0x0c, 0x10, 0x10},
+    {16384000, 32000, 0x02, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {8192000, 32000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {6144000, 32000, 0x03, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {4096000, 32000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {3072000, 32000, 0x03, 0x03, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {2048000, 32000, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1536000, 32000, 0x03, 0x03, 0x01, 0x01, 0x01, 0x00, 0x7f, 0x02, 0x10, 0x10},
+    {1024000, 32000, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+
+    /* 44.1k */
+    {11289600, 44100, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {5644800, 44100, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {2822400, 44100, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1411200, 44100, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+
+    /* 48k */
+    {12288000, 48000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {18432000, 48000, 0x03, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {6144000, 48000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {3072000, 48000, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1536000, 48000, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+
+    /* 64k */
+    {12288000, 64000, 0x03, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {18432000, 64000, 0x03, 0x02, 0x03, 0x03, 0x01, 0x01, 0x7f, 0x06, 0x10, 0x10},
+    {16384000, 64000, 0x01, 0x00, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {8192000, 64000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {6144000, 64000, 0x01, 0x02, 0x03, 0x03, 0x01, 0x01, 0x7f, 0x06, 0x10, 0x10},
+    {4096000, 64000, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {3072000, 64000, 0x01, 0x03, 0x03, 0x03, 0x01, 0x01, 0x7f, 0x06, 0x10, 0x10},
+    {2048000, 64000, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1536000, 64000, 0x01, 0x03, 0x01, 0x01, 0x01, 0x00, 0xbf, 0x03, 0x18, 0x18},
+    {1024000, 64000, 0x01, 0x03, 0x01, 0x01, 0x01, 0x00, 0x7f, 0x02, 0x10, 0x10},
+
+    /* 88.2k */
+    {11289600, 88200, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {5644800, 88200, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {2822400, 88200, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1411200, 88200, 0x01, 0x03, 0x01, 0x01, 0x01, 0x00, 0x7f, 0x02, 0x10, 0x10},
+
+    /* 96k */
+    {12288000, 96000, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {18432000, 96000, 0x03, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {6144000, 96000, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {3072000, 96000, 0x01, 0x03, 0x01, 0x01, 0x00, 0x00, 0xff, 0x04, 0x10, 0x10},
+    {1536000, 96000, 0x01, 0x03, 0x01, 0x01, 0x01, 0x00, 0x7f, 0x02, 0x10, 0x10},
+};
+
+/* 辅助函数：I2C 读写 */
+static int es8311_write_reg(const struct device *dev, uint8_t reg, uint8_t val) {
+    const struct es8311_config *cfg = dev->config;
     return i2c_reg_write_byte_dt(&cfg->i2c, reg, val);
 }
 
-static int es8311_read_reg(const struct device *dev, uint8_t reg, uint8_t *val)
-{
-    const struct es8311_driver_config *cfg = dev->config;
+static int es8311_read_reg(const struct device *dev, uint8_t reg, uint8_t *val) {
+    const struct es8311_config *cfg = dev->config;
     return i2c_reg_read_byte_dt(&cfg->i2c, reg, val);
 }
 
-static int es8311_update_reg(const struct device *dev, uint8_t reg, uint8_t mask, uint8_t val)
-{
-    uint8_t old_val, new_val;
-    int ret = es8311_read_reg(dev, reg, &old_val);
-    if (ret != 0) return ret;
-    new_val = (old_val & ~mask) | (val & mask);
-    return es8311_write_reg(dev, reg, new_val);
-}
+/* 时钟配置逻辑 */
+static int es8311_setup_clock(const struct device *dev, uint32_t mclk, uint32_t rate) {
+    printk("[%s][%d]ES8311 mclk:[%d], rate:[%d].\n", __func__, __LINE__, mclk, rate);
 
-/* --- 音频配置 --- */
-static int es8311_set_dai_fmt(const struct device *dev, audio_dai_cfg_t *cfg)
-{
-    uint8_t fmt = 0, wl = 0;
-
-    /* 映射格式 (I2S, LJ, etc.) */
-    switch (cfg->i2s.format) {
-    case I2S_FMT_DATA_FORMAT_I2S: fmt = ES8311_I2S; break;
-    case I2S_FMT_DATA_FORMAT_LEFT_JUSTIFIED: fmt = ES8311_LJ; break;
-    default: return -EINVAL;
+    const struct es8311_coeff *c = NULL;
+    for (int i = 0; i < ARRAY_SIZE(coeff_table); i++) {
+        if (coeff_table[i].rate == rate && coeff_table[i].mclk == mclk) {
+            c = &coeff_table[i];
+            break;
+        }
+    }
+    if (!c) {
+        printk("[%s][%d]ES8311. get c failed.\n", __func__, __LINE__);
+        return -EINVAL;
     }
 
-    /* 映射字长 */
-    switch (cfg->i2s.word_size) {
-    case 16: wl = 3 << 2; break;
-    case 24: wl = 0 << 2; break;
-    case 32: wl = 4 << 2; break;
-    default: return -EINVAL;
-    }
+    // Reg 02: Pre-divider & Multiplier
+    es8311_write_reg(dev, ES8311_REG02_CLK_DIV_M, ((c->pre_div - 1) << 5) | (c->pre_multi << 3));
+    // Reg 03 & 04: OSR
+    es8311_write_reg(dev, ES8311_REG03_ADC_OSR, (c->fs_mode << 6) | c->adc_osr);
+    es8311_write_reg(dev, ES8311_REG04_DAC_OSR, c->dac_osr);
+    // Reg 05: ADC/DAC Clock Div
+    es8311_write_reg(dev, ES8311_REG05_CLK_DIV_AD, ((c->adc_div - 1) << 4) | (c->dac_div - 1));
+    // Reg 06: BCLK Div
+    uint8_t bclk_div = (c->bclk_div < 19) ? (c->bclk_div - 1) : c->bclk_div;
+    es8311_write_reg(dev, ES8311_REG06_BCLK_DIV, bclk_div);
+    // Reg 07 & 08: LRCK Div
+    es8311_write_reg(dev, ES8311_REG07_LRCK_DIV_H, c->lrck_h);
+    es8311_write_reg(dev, ES8311_REG08_LRCK_DIV_L, c->lrck_l);
 
-    es8311_update_reg(dev, ES8311_REG_SDP_IN, ES8311_SDP_IN_FMT_MASK | ES8311_SDP_IN_WL_MASK, fmt | wl);
-    es8311_update_reg(dev, ES8311_REG_SDP_OUT, ES8311_SDP_OUT_FMT_MASK | ES8311_SDP_OUT_WL_MASK, fmt | wl);
-    
     return 0;
 }
 
-static int es8311_dump_status(const struct device *dev)
-{
-    uint8_t id1, id2, flag, sys12, sys0d, clk01;
-
-    // 1. 验证通信与芯片 ID (预期: 0x83 0x11)
-    es8311_read_reg(dev, ES8311_REG_CHIP_ID1, &id1);
-    es8311_read_reg(dev, ES8311_REG_CHIP_ID2, &id2);
-
-    // 2. 读取状态机标志 (Register 0xFC)
-    // Bits [6:4] FLAG_CSM_CHIP: 0=S0(Wait), 7=S7(Ready)
-    es8311_read_reg(dev, 0xFC, &flag);
-
-    // 3. 读取电源与时钟控制
-    es8311_read_reg(dev, 0x01, &clk01); // MCLK_ON, BCLK_ON
-    es8311_read_reg(dev, 0x0D, &sys0d); // PDN_ANA (应该为0以使能模拟电路)
-    es8311_read_reg(dev, 0x12, &sys12); // PDN_DAC (应该为0以使能DAC)
-
-    printk("--- ES8311 Diagnostic Report ---\n");
-    printk("Chip ID: 0x%02X%02X (Expected: 0x8311)\n", id1, id2);
-    printk("CSM State: S%d (Expected: S7 for playback)\n", (flag >> 4) & 0x07);
-    printk("Clock Config: 0x%02X (MCLK_ON: %d, BCLK_ON: %d)\n",
-            clk01, (clk01 >> 5) & 1, (clk01 >> 4) & 1);
-    printk("Power Status: DAC_PDN=%d, ANA_PDN=%d\n",
-            (sys12 >> 1) & 1, (sys0d >> 7) & 1);
-
-    if (id1 != 0x83) {
-        printk("Error: I2C Communication failed or wrong address!\n");
-        return -EIO;
-    }
-    return 0;
-}
-
-static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cfg)
-{
+/* API 实现：配置 (类似 wm8962_configure) */
+static int es8311_configure(const struct device *dev, struct audio_codec_cfg *cfg) {
+    const struct es8311_config *dev_cfg = dev->config;
     int ret;
 
-    /* 1. 软复位 */
-    es8311_write_reg(dev, ES8311_REG_RESET, 0x1F); // 这里的复位值参考 DS
-    k_msleep(10);
-    es8311_write_reg(dev, ES8311_REG_RESET, 0x00);
+    // 1. 软件复位序列 (参考 ESP-IDF es8311_init)
+    es8311_write_reg(dev, ES8311_REG00_RESET, 0x1F);
+    k_msleep(20);
+    es8311_write_reg(dev, ES8311_REG00_RESET, 0x00);
+    es8311_write_reg(dev, ES8311_REG00_RESET, 0x80); // Power on
 
-    /* 2. 时钟与电源初始化 (这里需要根据 Datasheet 的典型上电序列) */
-    es8311_write_reg(dev, ES8311_REG_SYSTEM0B, 0x00); // 示例：Power up stage A
-    es8311_write_reg(dev, ES8311_REG_CLK_MANAGER01, ES8311_MCLK_ON | ES8311_BCLK_ON); // 开启 MCLK/BCLK
+    // 2. 时钟源选择 (Reg 01)
+    uint8_t reg01 = 0x3F; // 使能所有时钟
 
-    // 3. 使能模拟电源与使能 DAC
-    es8311_write_reg(dev, ES8311_REG_SYSTEM0D, 0x00); // PDN_ANA=0 (Enable analog)
-    es8311_write_reg(dev, ES8311_REG_SYSTEM12, 0x00); // PDN_DAC=0 (Enable DAC)
-    es8311_write_reg(dev, ES8311_REG_SYSTEM13, 0x10); // HPSW=1 (Enable HP driver for OUTP/N)
+    if (dev_cfg->mclk_from_sclk) {
+        reg01 |= (1 << 7); // Bit 7 = 1: 内部 MCLK 源自 BCLK 引脚
+        LOG_INF("ES8311 using BCLK as clock source");
+    } else {
+        reg01 &= ~(1 << 7); // Bit 7 = 0: 内部 MCLK 源自 MCLK 引脚 (默认)
+        LOG_INF("ES8311 using external MCLK pin");
+    }
 
-    /* 4. 配置 DAI 格式 */
-    ret = es8311_set_dai_fmt(dev, &cfg->dai_cfg);
-    if (ret != 0) return ret;
+    es8311_write_reg(dev, ES8311_REG01_CLK_MAN, reg01);
 
-    /* 5. 设置采样率 (逻辑较复杂，简化处理) */
-    // ES8311 需要根据 MCLK 和 Fs 配置 ADC_OSR (Reg 0x03) 和 DAC_OSR (Reg 0x04)
-    // 假设使用默认 256Fs 模式
-    
-    /* 6. 解除静音 */
-    es8311_write_reg(dev, ES8311_REG_ADC_VOLUME, 0xBF); // 0dB
-    es8311_write_reg(dev, ES8311_REG_DAC_VOLUME, 0xBF); // 0dB
+    // 3. 应用时钟分频
+    ret = es8311_setup_clock(dev, cfg->mclk_freq, cfg->dai_cfg.i2s.frame_clk_freq);
+    if (ret) return ret;
 
-    /* CSM on */
-    es8311_write_reg(dev, ES8311_REG_RESET, ES8311_CSM_ON);
+    // 4. 数据格式与分辨率 (Reg 09, 0A)
+    uint8_t res_val = 0;
+    switch (cfg->dai_cfg.i2s.word_size) {
+        case 16: res_val = (3 << 2); break;
+        case 24: res_val = (0 << 2); break;
+        case 32: res_val = (4 << 2); break;
+        default: 
+            printk("[%s][%d]ES8311. bad word size.\n", __func__, __LINE__);
+            return -EINVAL;
+    }
+    es8311_write_reg(dev, ES8311_REG09_SDP_IN, res_val);
+    es8311_write_reg(dev, ES8311_REG0A_SDP_OUT, res_val);
+
+    // 5. 电源与模拟路径启动
+    es8311_write_reg(dev, ES8311_REG0D_SYSTEM, 0x01); // 模拟电路上电
+    es8311_write_reg(dev, ES8311_REG0E_SYSTEM, 0x02); // PGA & ADC 上电
+    es8311_write_reg(dev, ES8311_REG12_SYSTEM_DAC, 0x00); // DAC 上电
+    es8311_write_reg(dev, ES8311_REG13_SYSTEM_HP, 0x10);  // 使能耳机驱动
+    es8311_write_reg(dev, ES8311_REG1C_ADC_EQ, 0x6A);    // ADC 偏置校准
+    es8311_write_reg(dev, ES8311_REG37_DAC_RAMP, 0x08);  // 旁路 DAC EQ
 
     return 0;
 }
 
+/* API 实现：属性设置 (音量/静音) */
 static int es8311_set_property(const struct device *dev, audio_property_t property,
-                               audio_channel_t channel, audio_property_value_t val)
-{
+                               audio_channel_t channel, audio_property_value_t val) {
     switch (property) {
-    case AUDIO_PROPERTY_OUTPUT_VOLUME:
-        /* ES8311 DAC Volume: 0x00 = -95.5dB, 0xBF = 0dB, 0xFF = +32dB */
-        return es8311_write_reg(dev, ES8311_REG_DAC_VOLUME, (uint8_t)val.vol);
-    case AUDIO_PROPERTY_OUTPUT_MUTE:
-        return es8311_update_reg(dev, ES8311_REG_DAC_CONTROL31, 0x40, val.mute ? 0x40 : 0x00);
+    case AUDIO_PROPERTY_OUTPUT_VOLUME: {
+        // Zephyr 音量 0-100 -> ES8311 寄存器 0-255
+        uint8_t vol = (val.vol * 255) / 100;
+        return es8311_write_reg(dev, ES8311_REG32_DAC_VOL, vol);
+    }
+    case AUDIO_PROPERTY_OUTPUT_MUTE: {
+        uint8_t mask = (1 << 6) | (1 << 5); // Mute & Soft Mute bits
+        return es8311_write_reg(dev, ES8311_REG31_DAC_MUTE, val.mute ? mask : 0);
+    }
     default:
         return -ENOTSUP;
     }
 }
 
-static const struct audio_codec_api es8311_api = {
+/* 驱动接口定义 */
+static const struct audio_codec_api es8311_driver_api = {
     .configure = es8311_configure,
     .set_property = es8311_set_property,
-    .dump = es8311_dump_status,
 };
 
-#define ES8311_INIT(n)                                         \
-    static const struct es8311_driver_config es8311_cfg_##n = { \
-        .i2c = I2C_DT_SPEC_INST_GET(n),                        \
-    };                                                         \
-    DEVICE_DT_INST_DEFINE(n, NULL, NULL, NULL,                  \
-                          &es8311_cfg_##n, POST_KERNEL,        \
-                          CONFIG_AUDIO_CODEC_INIT_PRIORITY,    \
-                          &es8311_api);
+static int es8311_init(const struct device *dev) {
+    const struct es8311_config *cfg = dev->config;
+    if (!device_is_ready(cfg->i2c.bus)) return -ENODEV;
+    return 0;
+}
+
+/* 实例化宏 */
+#define ES8311_INIT(n)                                              \
+    static const struct es8311_config es8311_cfg_##n = {            \
+        .i2c = I2C_DT_SPEC_INST_GET(n),                             \
+        .mclk_from_sclk = DT_INST_PROP(n, mclk_from_sclk),          \
+    };                                                              \
+    static struct es8311_data es8311_data_##n;                      \
+    DEVICE_DT_INST_DEFINE(n, es8311_init, NULL,                     \
+                          &es8311_data_##n, &es8311_cfg_##n,         \
+                          POST_KERNEL, CONFIG_AUDIO_CODEC_INIT_PRIORITY, \
+                          &es8311_driver_api);
 
 DT_INST_FOREACH_STATUS_OKAY(ES8311_INIT)
