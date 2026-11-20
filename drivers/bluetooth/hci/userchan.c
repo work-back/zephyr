@@ -255,7 +255,7 @@ static void rx_thread(void *p1, void *p2, void *p3)
 	long frame_size = 0;
 
 	while (1) {
-		static uint8_t frame[512];
+		static uint8_t frame[2048];
 		struct net_buf *buf;
 		size_t buf_tailroom;
 		size_t buf_add_len;
